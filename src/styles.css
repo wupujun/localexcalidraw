@@ -495,13 +495,18 @@ p {
   place-items: center;
   min-height: 70vh;
   overflow: hidden;
+  padding: 20px;
 }
 
 .replay-image {
-  width: 100%;
-  height: 100%;
+  max-width: 100%;
+  max-height: calc(70vh - 40px);
+  width: auto;
+  height: auto;
   object-fit: contain;
   background: white;
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(21, 33, 31, 0.08);
 }
 
 .replay-placeholder {
@@ -517,6 +522,34 @@ p {
 
 .replay-audio {
   width: 100%;
+}
+
+.replay-rate-controls {
+  display: grid;
+  gap: 8px;
+}
+
+.replay-rate-label {
+  font-size: 0.85rem;
+  color: #5c6f67;
+}
+
+.replay-rate-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+}
+
+.replay-rate-slider {
+  width: 100%;
+}
+
+.replay-rate-value {
+  min-width: 42px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: #18392b;
 }
 
 .replay-frames {

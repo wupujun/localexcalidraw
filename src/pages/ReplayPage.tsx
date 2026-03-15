@@ -6,10 +6,12 @@ export function ReplayPage() {
   const { boardId, recordingId } = useParams();
   const navigate = useNavigate();
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const pausedForZeroRateRef = useRef(false);
   const [recording, setRecording] = useState<RecordingMeta | null>(null);
   const [currentTimeMs, setCurrentTimeMs] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
+  const [playbackRate, setPlaybackRate] = useState(1);
 
   useEffect(() => {
     if (!boardId || !recordingId) {
@@ -17,6 +19,39 @@ export function ReplayPage() {
     }
     void loadRecording(boardId, recordingId);
   }, [boardId, recordingId]);
+
+  useEffect(() => {
+    if (!audioRef.current) {
+      return;
+    }
+
+    if (playbackRate === 0) {
+      if (!audioRef.current.paused) {
+        pausedForZeroRateRef.current = true;
+      }
+      audioRef.current.pause();
+      return;
+    }
+
+    audioRef.current.playbackRate = playbackRate;
+    if (pausedForZeroRateRef.current) {
+      pausedForZeroRateRef.current = false;
+      void audioRef.current.play().catch(() => {
+        // Browsers may block autoplay without a recent user gesture.
+      });
+    }
+  }, [playbackRate]);
+
+  useEffect(() => {
+    if (!recording || !audioRef.current) {
+      return;
+    }
+
+    audioRef.current.currentTime = 0;
+    void audioRef.current.play().catch(() => {
+      // Browsers may block autoplay without a recent user gesture.
+    });
+  }, [recording]);
 
   async function loadRecording(nextBoardId: string, nextRecordingId: string) {
     setError(null);
@@ -81,6 +116,7 @@ export function ReplayPage() {
         <aside className="replay-sidebar">
           <audio
             ref={audioRef}
+            autoPlay
             controls
             className="replay-audio"
             onError={() => setPlaybackError("This browser cannot play the saved replay audio format.")}
@@ -88,6 +124,24 @@ export function ReplayPage() {
           >
             <source src={recording.audioPath} type={recording.audioMimeType} />
           </audio>
+          <div className="replay-rate-controls">
+            <label className="replay-rate-label" htmlFor="replay-rate">
+              Playback Rate
+            </label>
+            <div className="replay-rate-row">
+              <input
+                id="replay-rate"
+                type="range"
+                min="0"
+                max="5"
+                step="0.25"
+                value={playbackRate}
+                onChange={(event) => setPlaybackRate(Number(event.target.value))}
+                className="replay-rate-slider"
+              />
+              <span className="replay-rate-value">{playbackRate.toFixed(2).replace(/\.00$/, "")}x</span>
+            </div>
+          </div>
           {!isPlayableInBrowser ? (
             <div className="editor-banner error">
               This replay was saved as `{recording.audioMimeType}` and this browser does not report support for that format.
