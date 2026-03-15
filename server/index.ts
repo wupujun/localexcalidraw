@@ -4,9 +4,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   createBoard,
+  createRecording,
   deleteBoard,
+  deleteRecording,
   getBoard,
+  getRecording,
   listBoards,
+  listRecordings,
   saveBoard,
   type SceneData
 } from "./storage.js";
@@ -19,10 +23,31 @@ export function createApp() {
   const previewsDir = process.env.WHITEBOARD_DATA_DIR
     ? path.join(path.resolve(process.env.WHITEBOARD_DATA_DIR), "previews")
     : path.join(process.cwd(), "data", "previews");
+  const recordingsDir = process.env.WHITEBOARD_DATA_DIR
+    ? path.join(path.resolve(process.env.WHITEBOARD_DATA_DIR), "recordings")
+    : path.join(process.cwd(), "data", "recordings");
 
   app.use(cors());
   app.use(express.json({ limit: "25mb" }));
   app.use("/previews", express.static(previewsDir));
+  app.use(
+    "/recordings",
+    express.static(recordingsDir, {
+      setHeaders(res, filePath) {
+        if (filePath.endsWith(".webm")) {
+          res.type("audio/webm");
+          return;
+        }
+        if (filePath.endsWith(".ogg")) {
+          res.type("audio/ogg");
+          return;
+        }
+        if (filePath.endsWith(".mp4")) {
+          res.type("audio/mp4");
+        }
+      }
+    })
+  );
 
   app.get("/api/boards", async (_req, res) => {
     const boards = await listBoards();
@@ -67,6 +92,57 @@ export function createApp() {
     const deleted = await deleteBoard(req.params.id);
     if (!deleted) {
       res.status(404).json({ error: "Board not found" });
+      return;
+    }
+    res.status(204).send();
+  });
+
+  app.get("/api/boards/:id/recordings", async (req, res) => {
+    const recordings = await listRecordings(req.params.id);
+    res.json(recordings);
+  });
+
+  app.post("/api/boards/:id/recordings", async (req, res) => {
+    const title = typeof req.body?.title === "string" && req.body.title.trim() ? req.body.title.trim() : "Interview replay";
+    const durationMs = typeof req.body?.durationMs === "number" ? req.body.durationMs : 0;
+    const audioMimeType = typeof req.body?.audioMimeType === "string" ? req.body.audioMimeType : "";
+    const audioBase64 = typeof req.body?.audioBase64 === "string" ? req.body.audioBase64 : "";
+    const frames = Array.isArray(req.body?.frames) ? req.body.frames : [];
+
+    if (!audioBase64 || frames.length === 0) {
+      res.status(400).json({ error: "Recording requires audio and at least one frame" });
+      return;
+    }
+
+    const recording = await createRecording(req.params.id, {
+      title,
+      durationMs,
+      audioMimeType,
+      audioBase64,
+      frames
+    });
+
+    if (!recording) {
+      res.status(404).json({ error: "Board not found" });
+      return;
+    }
+
+    res.status(201).json(recording);
+  });
+
+  app.get("/api/boards/:id/recordings/:recordingId", async (req, res) => {
+    const recording = await getRecording(req.params.id, req.params.recordingId);
+    if (!recording) {
+      res.status(404).json({ error: "Recording not found" });
+      return;
+    }
+    res.json(recording);
+  });
+
+  app.delete("/api/boards/:id/recordings/:recordingId", async (req, res) => {
+    const deleted = await deleteRecording(req.params.id, req.params.recordingId);
+    if (!deleted) {
+      res.status(404).json({ error: "Recording not found" });
       return;
     }
     res.status(204).send();

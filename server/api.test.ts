@@ -87,6 +87,63 @@ test("board CRUD API lifecycle", async (t) => {
   assert.equal(updatedBoard.scene.appState.openMenu, undefined);
   assert.equal(updatedBoard.scene.elements[0]?.updated, 123);
 
+  const recordingResponse = await fetch(`${baseUrl}/api/boards/${createdBoard.id}/recordings`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      title: "Mock Interview Replay",
+      durationMs: 32000,
+      audioMimeType: "audio/webm",
+      audioBase64: "data:audio/webm;base64,ZmFrZQ==",
+      frames: [
+        {
+          timestampMs: 0,
+          imageBase64: "data:image/png;base64,ZmFrZQ=="
+        }
+      ]
+    })
+  });
+  assert.equal(recordingResponse.status, 201);
+  const createdRecording = await recordingResponse.json() as {
+    id: string;
+    title: string;
+    audioPath: string;
+    audioMimeType: string;
+    frames: Array<{ timestampMs: number; imagePath: string }>;
+  };
+  assert.equal(createdRecording.title, "Mock Interview Replay");
+  assert.match(createdRecording.id, /^r_/);
+  assert.equal(createdRecording.audioMimeType, "audio/webm");
+  assert.match(createdRecording.audioPath, /\.webm$/);
+  assert.equal(createdRecording.frames.length, 1);
+
+  const listRecordingsResponse = await fetch(`${baseUrl}/api/boards/${createdBoard.id}/recordings`);
+  assert.equal(listRecordingsResponse.status, 200);
+  const recordings = await listRecordingsResponse.json() as Array<{ id: string }>;
+  assert.equal(recordings.length, 1);
+  assert.equal(recordings[0]?.id, createdRecording.id);
+
+  const getRecordingResponse = await fetch(`${baseUrl}/api/boards/${createdBoard.id}/recordings/${createdRecording.id}`);
+  assert.equal(getRecordingResponse.status, 200);
+  const fetchedRecording = await getRecordingResponse.json() as {
+    id: string;
+    audioPath: string;
+    audioMimeType: string;
+    frames: Array<{ imagePath: string }>;
+  };
+  assert.equal(fetchedRecording.id, createdRecording.id);
+  assert.equal(fetchedRecording.audioMimeType, "audio/webm");
+  assert.match(fetchedRecording.audioPath, /\/recordings\//);
+  assert.match(fetchedRecording.frames[0]?.imagePath ?? "", /\/recordings\//);
+
+  const deleteRecordingResponse = await fetch(`${baseUrl}/api/boards/${createdBoard.id}/recordings/${createdRecording.id}`, {
+    method: "DELETE"
+  });
+  assert.equal(deleteRecordingResponse.status, 204);
+
+  const missingRecordingResponse = await fetch(`${baseUrl}/api/boards/${createdBoard.id}/recordings/${createdRecording.id}`);
+  assert.equal(missingRecordingResponse.status, 404);
+
   const deleteResponse = await fetch(`${baseUrl}/api/boards/${createdBoard.id}`, {
     method: "DELETE"
   });

@@ -20,6 +20,22 @@ export type BoardRecord = {
   scene: SceneData;
 };
 
+export type RecordingFrame = {
+  timestampMs: number;
+  imagePath: string;
+};
+
+export type RecordingMeta = {
+  id: string;
+  boardId: string;
+  title: string;
+  createdAt: string;
+  durationMs: number;
+  audioPath: string;
+  audioMimeType: string;
+  frames: RecordingFrame[];
+};
+
 async function parseJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const text = await response.text();
@@ -58,6 +74,40 @@ export async function saveBoard(id: string, payload: { title: string; scene: Sce
 
 export async function removeBoard(id: string) {
   const response = await fetch(`/api/boards/${id}`, { method: "DELETE" });
+  if (!response.ok) {
+    throw new Error(`Delete failed with ${response.status}`);
+  }
+}
+
+export async function fetchRecordings(boardId: string) {
+  return parseJson<RecordingMeta[]>(await fetch(`/api/boards/${boardId}/recordings`));
+}
+
+export async function fetchRecording(boardId: string, recordingId: string) {
+  return parseJson<RecordingMeta>(await fetch(`/api/boards/${boardId}/recordings/${recordingId}`));
+}
+
+export async function createRecording(
+  boardId: string,
+  payload: {
+    title: string;
+    durationMs: number;
+    audioMimeType: string;
+    audioBase64: string;
+    frames: Array<{ timestampMs: number; imageBase64: string }>;
+  }
+) {
+  return parseJson<RecordingMeta>(
+    await fetch(`/api/boards/${boardId}/recordings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    })
+  );
+}
+
+export async function removeRecording(boardId: string, recordingId: string) {
+  const response = await fetch(`/api/boards/${boardId}/recordings/${recordingId}`, { method: "DELETE" });
   if (!response.ok) {
     throw new Error(`Delete failed with ${response.status}`);
   }

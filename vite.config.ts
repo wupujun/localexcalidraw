@@ -7,7 +7,8 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/api": "http://localhost:3001",
-      "/previews": "http://localhost:3001"
+      "/previews": "http://localhost:3001",
+      "/recordings": "http://localhost:3001"
     }
   },
   build: {

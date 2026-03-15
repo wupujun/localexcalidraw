@@ -1,0 +1,22 @@
+Regression Memo
+
+Entry 1
+Date: 2026-03-15 02:39:15 -07:00
+Area: Editor page / recordings UI refactor
+
+Issue
+The board edit page stopped rendering correctly after moving the recordings UI into the top header.
+
+Root cause
+1. Stale JSX from the old "Saved recordings" panel was left in EditorPage.tsx after the new top-bar replay menu was added.
+2. The editor canvas lost a reliable explicit height during the header/layout refactor, which made the Excalidraw viewport unstable.
+3. The replay popover defaulted to open, increasing layout pressure during initial render.
+
+Lesson learned
+1. When replacing a UI section, remove the old render path entirely instead of hiding it behind temporary conditions.
+2. For canvas-heavy pages, preserve an explicit container height before changing header or panel layout.
+3. Default new popovers/drawers to closed unless there is a clear reason to open them on load.
+4. When debugging editor-route regressions, check whether the board API payload is valid first to separate data issues from layout/render issues.
+
+Follow-up rule
+For each future regression, append a new entry with: issue, root cause, lesson learned, and fix summary.

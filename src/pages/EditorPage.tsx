@@ -1,7 +1,15 @@
 import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { fetchBoard, saveBoard, type SceneData } from "../api";
+import {
+  createRecording,
+  fetchBoard,
+  fetchRecordings,
+  removeRecording,
+  saveBoard,
+  type RecordingMeta,
+  type SceneData
+} from "../api";
 import { ExcalidrawCanvas } from "../components/ExcalidrawCanvas";
 import { sanitizeScene } from "../scene";
 import {
@@ -13,28 +21,62 @@ import {
   type SaveStatus
 } from "../editorState";
 
+type RecordingStatus = "idle" | "recording" | "saving" | "error";
+type RecordingFrameDraft = {
+  timestampMs: number;
+  imageBase64: string;
+};
+
+type RecordingMimeOption = {
+  mimeType: string;
+};
+
+const RECORDING_FRAME_INTERVAL_MS = 5000;
+const RECORDING_MIME_OPTIONS: RecordingMimeOption[] = [
+  { mimeType: "audio/webm;codecs=opus" },
+  { mimeType: "audio/webm" },
+  { mimeType: "audio/ogg;codecs=opus" },
+  { mimeType: "audio/ogg" },
+  { mimeType: "audio/mp4;codecs=mp4a.40.2" },
+  { mimeType: "audio/mp4" }
+];
+
 export function EditorPage() {
   const { boardId } = useParams();
   const navigate = useNavigate();
   const excalidrawRef = useRef<ExcalidrawImperativeAPI | null>(null);
   const savedSnapshotRef = useRef<string>("");
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const recordingFramesRef = useRef<RecordingFrameDraft[]>([]);
+  const recordingChunksRef = useRef<Blob[]>([]);
+  const recordingIntervalRef = useRef<number | null>(null);
+  const recordingStartedAtRef = useRef<number | null>(null);
+  const recordingMimeTypeRef = useRef<string>("");
   const [title, setTitle] = useState("Untitled board");
   const [initialScene, setInitialScene] = useState<SceneData | null>(null);
   const [status, setStatus] = useState<SaveStatus>("loading");
   const [error, setError] = useState<string | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
   const [secondsUntilAutosave, setSecondsUntilAutosave] = useState(AUTOSAVE_INTERVAL_SECONDS);
+  const [recordingStatus, setRecordingStatus] = useState<RecordingStatus>("idle");
+  const [recordingElapsedMs, setRecordingElapsedMs] = useState(0);
+  const [recordingError, setRecordingError] = useState<string | null>(null);
+  const [recordings, setRecordings] = useState<RecordingMeta[]>([]);
+  const [deletingRecordingId, setDeletingRecordingId] = useState<string | null>(null);
+  const [isRecordingsPanelOpen, setIsRecordingsPanelOpen] = useState(false);
 
   useEffect(() => {
     if (!boardId) {
       return;
     }
     void loadBoard(boardId);
+    void loadRecordings(boardId);
   }, [boardId]);
 
   useEffect(() => {
     function handleBeforeUnload(event: BeforeUnloadEvent) {
-      if (status === "dirty" || status === "saving") {
+      if (status === "dirty" || status === "saving" || recordingStatus === "recording" || recordingStatus === "saving") {
         event.preventDefault();
         event.returnValue = "";
       }
@@ -42,7 +84,7 @@ export function EditorPage() {
 
     window.addEventListener("beforeunload", handleBeforeUnload);
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
-  }, [status]);
+  }, [status, recordingStatus]);
 
   useEffect(() => {
     if (!isLoaded) {
@@ -67,6 +109,26 @@ export function EditorPage() {
     setSecondsUntilAutosave(AUTOSAVE_INTERVAL_SECONDS);
   }, [isLoaded, status]);
 
+  useEffect(() => {
+    if (recordingStatus !== "recording") {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      if (recordingStartedAtRef.current) {
+        setRecordingElapsedMs(Date.now() - recordingStartedAtRef.current);
+      }
+    }, 500);
+
+    return () => window.clearInterval(interval);
+  }, [recordingStatus]);
+
+  useEffect(() => {
+    return () => {
+      cleanupRecordingResources();
+    };
+  }, []);
+
   async function loadBoard(id: string) {
     setStatus("loading");
     setError(null);
@@ -84,6 +146,14 @@ export function EditorPage() {
     }
   }
 
+  async function loadRecordings(id: string) {
+    try {
+      setRecordings(await fetchRecordings(id));
+    } catch {
+      setRecordings([]);
+    }
+  }
+
   async function handleSave(isAutosave = false) {
     if (!boardId || !excalidrawRef.current) {
       return;
@@ -93,37 +163,18 @@ export function EditorPage() {
       return;
     }
 
-    const elements = excalidrawRef.current.getSceneElementsIncludingDeleted();
-    const appState = excalidrawRef.current.getAppState();
-    const files = excalidrawRef.current.getFiles();
-    const nextScene: SceneData = {
-      type: "excalidraw",
-      version: 2,
-      source: "local-whiteboard-app",
-      elements,
-      appState,
-      files
-    };
-    const sanitizedScene = sanitizeScene(nextScene);
+    const currentScene = getCurrentSceneSnapshot(excalidrawRef.current);
+    if (!currentScene) {
+      return;
+    }
 
     setStatus("saving");
     setError(null);
 
     try {
-      const { exportToBlob } = await import("@excalidraw/excalidraw");
-      const previewBlob = await exportToBlob({
-        elements: elements.filter((element) => !element.isDeleted),
-        appState: {
-          ...appState,
-          exportBackground: true
-        },
-        files,
-        mimeType: "image/png"
-      });
-
-      const preview = await blobToDataUrl(previewBlob);
-      await saveBoard(boardId, { title, scene: sanitizedScene, preview });
-      savedSnapshotRef.current = createSavedSnapshot(title, sanitizedScene);
+      const preview = await exportCurrentSceneAsDataUrl(excalidrawRef.current);
+      await saveBoard(boardId, { title, scene: currentScene, preview });
+      savedSnapshotRef.current = createSavedSnapshot(title, currentScene);
       setStatus("saved");
       setSecondsUntilAutosave(AUTOSAVE_INTERVAL_SECONDS);
     } catch (err) {
@@ -132,11 +183,7 @@ export function EditorPage() {
     }
   }
 
-  function handleSceneChange(
-    elements: readonly unknown[],
-    appState: Record<string, unknown>,
-    files: Record<string, unknown>
-  ) {
+  function handleSceneChange(elements: readonly unknown[], appState: Record<string, unknown>, files: Record<string, unknown>) {
     if (!isLoaded) {
       return;
     }
@@ -152,7 +199,139 @@ export function EditorPage() {
     setStatus((current) => getNextSaveStatus(current, title, currentScene, savedSnapshotRef.current));
   }
 
+  async function handleStartRecording() {
+    if (!boardId || !excalidrawRef.current || recordingStatus === "recording" || recordingStatus === "saving") {
+      return;
+    }
+
+    setRecordingError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = getPreferredRecordingMimeType();
+      recordingMimeTypeRef.current = normalizeAudioMimeType(mimeType?.mimeType ?? "");
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType: mimeType.mimeType } : undefined);
+      mediaStreamRef.current = stream;
+      mediaRecorderRef.current = recorder;
+      recordingChunksRef.current = [];
+      recordingFramesRef.current = [];
+      recordingStartedAtRef.current = Date.now();
+      setRecordingElapsedMs(0);
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          recordingChunksRef.current.push(event.data);
+        }
+      };
+
+      await captureRecordingFrame();
+      recorder.start();
+      recordingIntervalRef.current = window.setInterval(() => {
+        void captureRecordingFrame();
+      }, RECORDING_FRAME_INTERVAL_MS);
+
+      setRecordingStatus("recording");
+    } catch (err) {
+      setRecordingError(err instanceof Error ? err.message : "Unable to start microphone recording");
+      setRecordingStatus("error");
+      cleanupRecordingResources();
+    }
+  }
+
+  async function handleStopRecording() {
+    if (!boardId || !mediaRecorderRef.current || recordingStatus !== "recording") {
+      return;
+    }
+
+    setRecordingStatus("saving");
+    setRecordingError(null);
+
+    try {
+      await captureRecordingFrame();
+      const audioBlob = await stopRecorder(mediaRecorderRef.current, recordingChunksRef.current);
+      const audioMimeType = normalizeAudioMimeType(audioBlob.type || recordingMimeTypeRef.current);
+      const audioBase64 = await blobToDataUrl(audioBlob);
+      const durationMs = recordingStartedAtRef.current ? Date.now() - recordingStartedAtRef.current : recordingElapsedMs;
+      const recording = await createRecording(boardId, {
+        title: `${title} interview replay`,
+        durationMs,
+        audioMimeType,
+        audioBase64,
+        frames: recordingFramesRef.current
+      });
+      setRecordings((current) => [recording, ...current]);
+      setRecordingStatus("idle");
+      setRecordingElapsedMs(0);
+    } catch (err) {
+      setRecordingStatus("error");
+      setRecordingError(err instanceof Error ? err.message : "Failed to save recording");
+    } finally {
+      cleanupRecordingResources();
+    }
+  }
+
+  async function handleDeleteRecording(recordingId: string) {
+    if (!boardId || deletingRecordingId) {
+      return;
+    }
+
+    const confirmed = window.confirm("Delete this replay?");
+    if (!confirmed) {
+      return;
+    }
+
+    setDeletingRecordingId(recordingId);
+    setRecordingError(null);
+    try {
+      await removeRecording(boardId, recordingId);
+      setRecordings((current) => current.filter((recording) => recording.id !== recordingId));
+    } catch (err) {
+      setRecordingError(err instanceof Error ? err.message : "Failed to delete replay");
+    } finally {
+      setDeletingRecordingId(null);
+    }
+  }
+
+  async function captureRecordingFrame() {
+    if (!excalidrawRef.current || !recordingStartedAtRef.current) {
+      return;
+    }
+
+    const imageBase64 = await exportCurrentSceneAsDataUrl(excalidrawRef.current);
+    recordingFramesRef.current.push({
+      timestampMs: Date.now() - recordingStartedAtRef.current,
+      imageBase64
+    });
+  }
+
+  function cleanupRecordingResources() {
+    if (recordingIntervalRef.current !== null) {
+      window.clearInterval(recordingIntervalRef.current);
+      recordingIntervalRef.current = null;
+    }
+
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
+    }
+
+    mediaRecorderRef.current = null;
+    recordingStartedAtRef.current = null;
+    recordingMimeTypeRef.current = "";
+    recordingChunksRef.current = [];
+    recordingFramesRef.current = [];
+  }
+
   function handleBack() {
+    if (recordingStatus === "recording" || recordingStatus === "saving") {
+      const confirmed = window.confirm("A recording is in progress. Leave and discard it?");
+      if (!confirmed) {
+        return;
+      }
+      cleanupRecordingResources();
+      setRecordingStatus("idle");
+      setRecordingElapsedMs(0);
+    }
+
     if (status === "dirty" || status === "saving") {
       const confirmed = window.confirm("Leave without saving your latest changes?");
       if (!confirmed) {
@@ -173,36 +352,92 @@ export function EditorPage() {
   return (
     <div className="editor-shell">
       <header className="editor-header">
-        <button className="secondary-button" onClick={handleBack}>
-          Back
-        </button>
-        <label className="title-field">
-          <span>Board</span>
-          <input
-            value={title}
-            onChange={(event) => {
-              const nextTitle = event.target.value;
-              setTitle(nextTitle);
-
-              const currentScene = getCurrentSceneSnapshot(excalidrawRef.current);
-              if (!currentScene) {
-                return;
-              }
-
-              setStatus((current) => getNextSaveStatus(current, nextTitle, currentScene, savedSnapshotRef.current));
-            }}
-          />
-        </label>
-        <div className="save-meta">
-          <span className={`save-pill ${status}`}>{renderStatus(status)}</span>
-          <span className="autosave-text">{getAutosaveText(status, secondsUntilAutosave)}</span>
+        <div className="editor-primary">
+          <button className="secondary-button" onClick={handleBack}>
+            Back
+          </button>
+          <label className="title-field compact">
+            <span className="title-label">Board</span>
+            <input
+              value={title}
+              onChange={(event) => {
+                const nextTitle = event.target.value;
+                setTitle(nextTitle);
+                const currentScene = getCurrentSceneSnapshot(excalidrawRef.current);
+                if (!currentScene) {
+                  return;
+                }
+                setStatus((current) => getNextSaveStatus(current, nextTitle, currentScene, savedSnapshotRef.current));
+              }}
+            />
+          </label>
         </div>
-        <button className="primary-button" onClick={() => void handleSave()} disabled={status === "saving"}>
-          Save
-        </button>
+        <div className="editor-statuses">
+          <div className="save-meta">
+            <span className={`save-pill ${status}`}>{renderStatus(status)}</span>
+            <span className="autosave-text">{getAutosaveText(status, secondsUntilAutosave)}</span>
+          </div>
+        </div>
+        <div className="editor-actions">
+          <div className="recordings-menu">
+            <button
+              type="button"
+              className="secondary-button recordings-menu-toggle"
+              onClick={() => setIsRecordingsPanelOpen((current) => !current)}
+              aria-expanded={isRecordingsPanelOpen}
+            >
+              Replays ({recordings.length})
+            </button>
+            {isRecordingsPanelOpen ? (
+              <div className="recordings-popover">
+                {recordings.length === 0 ? (
+                  <div className="recordings-empty">Start recording during the walkthrough to save a replay.</div>
+                ) : (
+                  <div className="recordings-list compact">
+                    {recordings.map((recording) => (
+                      <article key={recording.id} className="recording-card compact">
+                        <div className="recording-card-copy">
+                          <strong>{recording.title}</strong>
+                          <span className="muted">
+                            {Math.round(recording.durationMs / 1000)}s | {new Date(recording.createdAt).toLocaleString()}
+                          </span>
+                        </div>
+                        <div className="recording-card-actions">
+                          <button className="secondary-button" onClick={() => navigate(`/boards/${boardId}/replays/${recording.id}`)}>
+                            Replay
+                          </button>
+                          <button
+                            className="danger-button"
+                            onClick={() => void handleDeleteRecording(recording.id)}
+                            disabled={deletingRecordingId === recording.id}
+                          >
+                            {deletingRecordingId === recording.id ? "Deleting..." : "Delete"}
+                          </button>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : null}
+          </div>
+          {recordingStatus === "recording" ? (
+            <button className="danger-button" onClick={() => void handleStopRecording()}>
+              Stop Recording
+            </button>
+          ) : (
+            <button className="secondary-button" onClick={() => void handleStartRecording()} disabled={recordingStatus === "saving"}>
+              Start Recording
+            </button>
+          )}
+          <button className="primary-button" onClick={() => void handleSave()} disabled={status === "saving"}>
+            Save
+          </button>
+        </div>
       </header>
 
       {error ? <div className="editor-banner error">{error}</div> : null}
+      {recordingError ? <div className="editor-banner error">{recordingError}</div> : null}
 
       <div className="editor-canvas">
         <ExcalidrawCanvas
@@ -232,6 +467,13 @@ function renderStatus(status: SaveStatus) {
   }
 }
 
+function formatDuration(durationMs: number) {
+  const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
 function getCurrentSceneSnapshot(api: ExcalidrawImperativeAPI | null): SceneData | null {
   if (!api) {
     return null;
@@ -247,6 +489,54 @@ function getCurrentSceneSnapshot(api: ExcalidrawImperativeAPI | null): SceneData
   });
 }
 
+async function exportCurrentSceneAsDataUrl(api: ExcalidrawImperativeAPI) {
+  const elements = api.getSceneElementsIncludingDeleted();
+  const appState = api.getAppState();
+  const files = api.getFiles();
+  const { exportToBlob } = await import("@excalidraw/excalidraw");
+  const previewBlob = await exportToBlob({
+    elements: elements.filter((element) => !element.isDeleted),
+    appState: {
+      ...appState,
+      exportBackground: true
+    },
+    files,
+    mimeType: "image/png"
+  });
+
+  return blobToDataUrl(previewBlob);
+}
+
+function stopRecorder(recorder: MediaRecorder, chunks: Blob[]) {
+  return new Promise<Blob>((resolve, reject) => {
+    recorder.onerror = () => reject(recorder.error ?? new Error("Recording failed"));
+    recorder.onstop = () =>
+      resolve(new Blob(chunks, { type: normalizeAudioMimeType(recorder.mimeType || chunks[0]?.type || "") || "audio/webm" }));
+    recorder.stop();
+  });
+}
+
+function getPreferredRecordingMimeType() {
+  if (typeof MediaRecorder === "undefined") {
+    return null;
+  }
+
+  return RECORDING_MIME_OPTIONS.find((option) => MediaRecorder.isTypeSupported(option.mimeType)) ?? null;
+}
+
+function normalizeAudioMimeType(mimeType: string) {
+  if (mimeType.startsWith("audio/mp4")) {
+    return "audio/mp4";
+  }
+  if (mimeType.startsWith("audio/ogg")) {
+    return "audio/ogg";
+  }
+  if (mimeType.startsWith("audio/webm")) {
+    return "audio/webm";
+  }
+  return "";
+}
+
 function blobToDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -254,10 +544,10 @@ function blobToDataUrl(blob: Blob): Promise<string> {
       if (typeof reader.result === "string") {
         resolve(reader.result);
       } else {
-        reject(new Error("Failed to read preview"));
+        reject(new Error("Failed to read blob"));
       }
     };
-    reader.onerror = () => reject(reader.error ?? new Error("Failed to read preview"));
+    reader.onerror = () => reject(reader.error ?? new Error("Failed to read blob"));
     reader.readAsDataURL(blob);
   });
 }
