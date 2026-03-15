@@ -1,0 +1,89 @@
+import cors from "cors";
+import express from "express";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  createBoard,
+  deleteBoard,
+  getBoard,
+  listBoards,
+  saveBoard,
+  type SceneData
+} from "./storage.js";
+
+const currentFile = fileURLToPath(import.meta.url);
+
+export function createApp() {
+  const app = express();
+  const clientDist = path.join(process.cwd(), "dist", "client");
+  const previewsDir = process.env.WHITEBOARD_DATA_DIR
+    ? path.join(path.resolve(process.env.WHITEBOARD_DATA_DIR), "previews")
+    : path.join(process.cwd(), "data", "previews");
+
+  app.use(cors());
+  app.use(express.json({ limit: "25mb" }));
+  app.use("/previews", express.static(previewsDir));
+
+  app.get("/api/boards", async (_req, res) => {
+    const boards = await listBoards();
+    res.json(boards);
+  });
+
+  app.post("/api/boards", async (req, res) => {
+    const title = typeof req.body?.title === "string" && req.body.title.trim() ? req.body.title.trim() : "Untitled board";
+    const board = await createBoard(title);
+    res.status(201).json(board.meta);
+  });
+
+  app.get("/api/boards/:id", async (req, res) => {
+    const board = await getBoard(req.params.id);
+    if (!board) {
+      res.status(404).json({ error: "Board not found" });
+      return;
+    }
+    res.json(board);
+  });
+
+  app.put("/api/boards/:id", async (req, res) => {
+    const title = typeof req.body?.title === "string" && req.body.title.trim() ? req.body.title.trim() : "Untitled board";
+    const scene = req.body?.scene as SceneData | undefined;
+    const preview = typeof req.body?.preview === "string" ? req.body.preview : null;
+
+    if (!scene || scene.type !== "excalidraw") {
+      res.status(400).json({ error: "Invalid scene payload" });
+      return;
+    }
+
+    const board = await saveBoard(req.params.id, title, scene, preview);
+    if (!board) {
+      res.status(404).json({ error: "Board not found" });
+      return;
+    }
+
+    res.json(board);
+  });
+
+  app.delete("/api/boards/:id", async (req, res) => {
+    const deleted = await deleteBoard(req.params.id);
+    if (!deleted) {
+      res.status(404).json({ error: "Board not found" });
+      return;
+    }
+    res.status(204).send();
+  });
+
+  app.use(express.static(clientDist));
+
+  app.get("*", (_req, res) => {
+    res.sendFile(path.join(clientDist, "index.html"));
+  });
+
+  return app;
+}
+
+if (process.argv[1] === currentFile) {
+  const port = Number(process.env.PORT ?? 3001);
+  createApp().listen(port, () => {
+    console.log(`Local whiteboard app listening on http://localhost:${port}`);
+  });
+}
